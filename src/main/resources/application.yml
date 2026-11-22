@@ -1,17 +1,55 @@
 server:
   port: 8083
+  # Al recibir SIGTERM (docker service update / scale down) termina las peticiones en curso
+  shutdown: graceful
 
 spring:
   application:
     name: ms-agenda
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  # Secretos de Docker Swarm montados en /run/secrets: cada archivo es una propiedad
+  # (por ejemplo spring.datasource.password). Si no existen se usan las variables de entorno.
+  config:
+    import: optional:configtree:/run/secrets/
   datasource:
-    url: jdbc:postgresql://localhost:5432/agenda_db
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:agenda_db}
     username: ${DB_USERNAME:respirar}
     password: ${DB_PASSWORD:respirar}
+    hikari:
+      # Pool chico: con varias réplicas por servicio, todas comparten la misma instancia RDS
+      maximum-pool-size: ${DB_POOL_SIZE:4}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
   jpa:
     hibernate:
       ddl-auto: update
     show-sql: false
+    open-in-view: false
 
-# En AWS: reemplazar por Aurora Serverless (endpoint via Secrets Manager) y variables
-# inyectadas por ECS Task Definition. Ver README de este servicio.
+# Eventos de dominio de citas: si SQS_COLA_CITAS_URL está vacío (desarrollo local) los eventos
+# solo se registran en el log; en la nube se publican en la cola SQS rys-citas-eventos.
+rys:
+  eventos:
+    sqs:
+      url: ${SQS_COLA_CITAS_URL:}
+      region: ${AWS_REGION:us-east-1}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  info:
+    env:
+      enabled: true
+
+info:
+  servicio: ms-agenda
+  version: ${APP_VERSION:local}

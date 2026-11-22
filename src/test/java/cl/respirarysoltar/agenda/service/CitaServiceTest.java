@@ -12,8 +12,13 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
+
+import cl.respirarysoltar.agenda.eventos.EventoCita;
+import cl.respirarysoltar.agenda.eventos.TipoEventoCita;
+import org.mockito.ArgumentCaptor;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -28,6 +33,8 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -44,6 +51,9 @@ class CitaServiceTest {
 
     @Mock
     private ValueOperations<String, String> valueOperations;
+
+    @Mock
+    private ApplicationEventPublisher eventos;
 
     @InjectMocks
     private CitaService service;
@@ -109,5 +119,35 @@ class CitaServiceTest {
         when(citaRepository.findById(any())).thenReturn(Optional.of(cita));
 
         assertThrows(ReglaNegocioException.class, () -> service.cancelar(UUID.randomUUID(), "motivo"));
+    }
+
+    @Test
+    void reservarPublicaElEventoCitaReservadaParaLaCola() {
+        when(citaRepository.existsByPsicologoIdAndHorarioAndEstadoIn(eq(psicologoId), eq(horario), anyList()))
+                .thenReturn(false);
+        when(valueOperations.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
+        when(citaRepository.save(any(Cita.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service.reservar(new CitaRequest(pacienteId, psicologoId, horario));
+
+        ArgumentCaptor<EventoCita> evento = ArgumentCaptor.forClass(EventoCita.class);
+        verify(eventos).publishEvent(evento.capture());
+        assertEquals(TipoEventoCita.CITA_RESERVADA, evento.getValue().tipo());
+        assertEquals(pacienteId, evento.getValue().pacienteId());
+        assertEquals(horario, evento.getValue().horario());
+    }
+
+    @Test
+    void siLaBaseDeDatosFallaSeLiberaElHorarioEnRedisYNoSePublicaEvento() {
+        when(citaRepository.existsByPsicologoIdAndHorarioAndEstadoIn(eq(psicologoId), eq(horario), anyList()))
+                .thenReturn(false);
+        when(valueOperations.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
+        when(citaRepository.save(any(Cita.class))).thenThrow(new IllegalStateException("BD caída"));
+
+        CitaRequest request = new CitaRequest(pacienteId, psicologoId, horario);
+        assertThrows(IllegalStateException.class, () -> service.reservar(request));
+
+        verify(redisTemplate).delete("slot:%s:%s".formatted(psicologoId, horario));
+        verify(eventos, never()).publishEvent(any(Object.class));
     }
 }
