@@ -13,7 +13,7 @@
 
     <groupId>cl.respirarysoltar</groupId>
     <artifactId>ms-agenda</artifactId>
-    <version>0.1.0</version>
+    <version>0.3.0</version>
     <name>ms-agenda</name>
     <description>Agendamiento, reprogramación y cancelación de citas. Cubre RF-04 y RF-05. Protege el invariante de negocio más crítico del sistema: nunca más de un paciente por horario con el mismo psicólogo.</description>
 
@@ -21,12 +21,30 @@
         <java.version>21</java.version>
         <!-- ByteBuddy compatible con JDK 22-25: Mockito lo usa para mockear StringRedisTemplate en las pruebas -->
         <byte-buddy.version>1.17.8</byte-buddy.version>
+        <aws-sdk.version>2.29.52</aws-sdk.version>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>software.amazon.awssdk</groupId>
+                <artifactId>bom</artifactId>
+                <version>${aws-sdk.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!-- Salud del contenedor: /actuator/health/liveness y /readiness (HEALTHCHECK de Docker y Swarm) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -39,6 +57,18 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+        <!-- Productor de eventos de dominio hacia Amazon SQS (cola rys-citas-eventos) -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>sqs</artifactId>
+            <exclusions>
+                <!-- Solo se usa el cliente HTTP síncrono: se excluye Netty para aligerar la imagen -->
+                <exclusion>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>netty-nio-client</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.postgresql</groupId>

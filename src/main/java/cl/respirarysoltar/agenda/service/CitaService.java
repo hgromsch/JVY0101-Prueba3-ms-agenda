@@ -8,6 +8,9 @@ import cl.respirarysoltar.agenda.exception.RecursoNoEncontradoException;
 import cl.respirarysoltar.agenda.exception.ReglaNegocioException;
 import cl.respirarysoltar.agenda.repository.CitaRepository;
 import cl.respirarysoltar.agenda.repository.HistorialEstadoCitaRepository;
+import cl.respirarysoltar.agenda.eventos.EventoCita;
+import cl.respirarysoltar.agenda.eventos.TipoEventoCita;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -39,13 +42,16 @@ public class CitaService {
     private final CitaRepository citaRepository;
     private final HistorialEstadoCitaRepository historialRepository;
     private final StringRedisTemplate redisTemplate;
+    private final ApplicationEventPublisher eventos;
 
     public CitaService(CitaRepository citaRepository,
                        HistorialEstadoCitaRepository historialRepository,
-                       StringRedisTemplate redisTemplate) {
+                       StringRedisTemplate redisTemplate,
+                       ApplicationEventPublisher eventos) {
         this.citaRepository = citaRepository;
         this.historialRepository = historialRepository;
         this.redisTemplate = redisTemplate;
+        this.eventos = eventos;
     }
 
     /** RF-04: agenda una cita garantizando que el horario no esté tomado. */
@@ -54,9 +60,19 @@ public class CitaService {
 
         Cita cita = new Cita(request.pacienteId(), request.psicologoId(), request.horario());
         cita.registrarCambioEstado(null, "Reserva inicial de la cita");
-        Cita guardada = citaRepository.save(cita);
+        Cita guardada;
+        try {
+            guardada = citaRepository.save(cita);
+        } catch (RuntimeException e) {
+            // Corrección EP3: si la BD falla, se libera la reserva en Redis (antes quedaba
+            // el horario bloqueado 10 minutos sin cita).
+            liberarSlot(request.psicologoId(), request.horario());
+            throw e;
+        }
 
-        // TODO (AWS): publicar evento "cita_confirmada" a la cola SQS de ms-notificaciones.
+        // RF-04 → cola SQS: la confirmación al paciente se procesa de forma asíncrona
+        // (se publica después del commit, ver EventosCitaListener).
+        eventos.publishEvent(EventoCita.de(TipoEventoCita.CITA_RESERVADA, guardada, null, null));
         return guardada;
     }
 
@@ -95,9 +111,10 @@ public class CitaService {
         cita.registrarCambioEstado(estadoAnterior, motivo == null || motivo.isBlank() ? "Sin motivo informado" : motivo);
         liberarSlot(cita.getPsicologoId(), cita.getHorario());
 
-        // TODO (AWS): publicar evento "cita_cancelada" a EventBridge para gatillar
-        // el reembolso en ms-pagos y la notificación en ms-notificaciones.
-        return citaRepository.save(cita);
+        Cita cancelada = citaRepository.save(cita);
+        eventos.publishEvent(EventoCita.de(TipoEventoCita.CITA_CANCELADA, cancelada, null,
+                motivo == null || motivo.isBlank() ? null : motivo));
+        return cancelada;
     }
 
     /** RF-05: mueve la cita a un nuevo horario, re-reservando el slot atómicamente. */
@@ -116,8 +133,9 @@ public class CitaService {
         cita.setEstado(EstadoCita.REPROGRAMADA);
         cita.registrarCambioEstado(estadoAnterior, "Reprogramada desde " + horarioAnterior);
 
-        // TODO (AWS): publicar evento "cita_reprogramada" a SQS para ms-notificaciones.
-        return citaRepository.save(cita);
+        Cita reprogramada = citaRepository.save(cita);
+        eventos.publishEvent(EventoCita.de(TipoEventoCita.CITA_REPROGRAMADA, reprogramada, horarioAnterior, null));
+        return reprogramada;
     }
 
     @Transactional(readOnly = true)
