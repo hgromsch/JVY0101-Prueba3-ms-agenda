@@ -57,4 +57,5 @@ management:
 
 info:
   servicio: ms-agenda
+  descripcion: Agendamiento de citas (RF-04 y RF-05) con confirmación asíncrona por Amazon SQS
   version: ${APP_VERSION:local}
